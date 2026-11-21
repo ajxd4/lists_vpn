@@ -13,7 +13,7 @@ Sources:
 - Mullvad: `api.mullvad.net/www/relays/all/` (direct relay IPs).
 - PIA: `serverlist.piaservers.net/vpninfo/servers/v6` (direct provider catalog; JSON first line of signed response, server `ip` fields).
 - Apple Private Relay: `mask-api.icloud.com/egress-ip-ranges.csv` (IPv4 CIDRs).
-- ProtonVPN: **disabled by default**, matching upstream's disabled automated workflow. Set `PI_INCLUDE_PROTON=1` to refresh its logical server exits via `api.protonmail.ch/vpn/logicals`. This is opt-in and may fail if API changes.
+- ProtonVPN: **enabled by default** using the independent Apache-2.0-licensed [tn3w/ProtonVPN-IPs](https://github.com/tn3w/ProtonVPN-IPs) feed `protonvpn_ips.txt` (advertised exit addresses). It removes full-line/inline comments, validates public IPv4 addresses, sorts and deduplicates, then stages `input/vpn/ips/protonvpn.txt` for the original X4BNet builder. The source is a third-party inventory, not directly fetched from Proton on this Pi. Its actual NAT egress IP coverage may be incomplete; see upstream tn3w documentation.
 - `input/vpn/ips/Manual.txt` and legacy provider snapshots are preserved from the fork.
 
 PIA is fetched directly rather than using the separate third-party PIA CSV that upstream's GitHub workflow uses, so the data may differ somewhat. Direct provider catalogs and IP-to-ASN databases remain external dependencies; independence means **your Pi performs the build and your fork controls the rules and output**, not that the Pi magically discovers VPN addresses without third-party feeds.
@@ -84,6 +84,13 @@ Set `vpnv4` Dynamic Network List URL to:
 
 The converter strips **only** terminal `/32` suffixes, leaving subnet ranges intact and no additional IPs blocked. UniFi should show the individual hosts plus subnet entries. Verify by testing a small sample on your firmware before enabling blanket blocking.
 
+For the separate ProtonVPN-only (exact address) list, use:
+
+`https://raw.githubusercontent.com/YOUR_USERNAME/lists_vpn/main/output/protonvpn/ipv4.txt`
+
+This standalone list has **no comments, no /24 expansion, and no CIDR syntax**. It is also included in the combined `output/unifi/vpn/ipv4.txt` list through the original build pipeline. The Pi downloads the source on each existing 6-hour timer invocation. The existing `git diff --cached --quiet` guard avoids commits when no published content changed. Do not apply both lists as duplicate deny rules unless intentionally desired; monitor before broad blocking. For outbound VPN connections rather than exit-address identification, consider the same project's separate `protonvpn_entry_ips.txt` inventory, since entry and advertised exit IPs differ.
+
+
 ## Optional settings
 
 Set environment variables in the `pi-vpn-builder.service` unit, then run `systemctl --user daemon-reload`:
@@ -92,7 +99,6 @@ Set environment variables in the `pi-vpn-builder.service` unit, then run `system
 - `PI_DATABASE_SOURCE=iptoasn` — use the public IPtoASN alternative; **does not support keyword matching**, unlike IPLocate, so changes the generated list.
 - `PI_DATABASE_DIR=/path/to/databases` — select local database snapshots rather than fetching current source; needs source-specific files per `build-local.sh --help`.
 - `PI_REFRESH_PROVIDERS=0` — emergency diagnostic offline test with cloned provider snapshots, not recommended for scheduled updates.
-- `PI_INCLUDE_PROTON=1` — optional live Proton refresh; default off.
 - `PI_DRY_RUN=1` — validate without publishing; no files are changed in the repo by the builder.
 
 If database/provider API, validation, git authentication, or push fails, **no broken update is published**. Failed pushes may leave a local commit; investigate using `git status`, `git log`, and `git push` rather than force-resetting blindly. If a successful validation changed staged files but an error happened before commit, the repo may need manual recovery. There is no automatic upstream pull, force-push, or automatic change to curated ASNs.
@@ -102,3 +108,7 @@ If database/provider API, validation, git authentication, or push fails, **no br
 The repository software, curated input and original generated lists are MIT licensed. IPLocate ASN database is CC BY-SA 4.0; the Pi also publishes the original builder's `output/ASN-DATABASE.txt` attribution. Consult upstream database redistribution terms before distributing these derived data products. The provider APIs may have separate terms. Keep original project credits and copyright/license notices in your fork.
 
 The original X4BNet workflow validates VPN IPv4 coverage between 2M and 4M addresses and datacenter between 250M and 425M, which this builder replicates. Those are **address coverage thresholds**, not line counts. When upstream classification or current data change significantly, the builder may intentionally stop until you review the limits.
+
+## ProtonVPN exact-IP feed attribution
+
+The cleaned ProtonVPN input comes from `tn3w/ProtonVPN-IPs` (Apache-2.0), https://github.com/tn3w/ProtonVPN-IPs . It is generated by that project from ProtonVPN server information. This Pi implementation imports their published plaintext instead of requiring Proton session cookies. Keep this attribution when redistributing the resulting standalone feed.

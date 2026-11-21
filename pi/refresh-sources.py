@@ -17,7 +17,7 @@ from urllib.request import Request, urlopen
 MULLVAD = 'https://api.mullvad.net/www/relays/all/'
 PIA = 'https://serverlist.piaservers.net/vpninfo/servers/v6'
 APPLE = 'https://mask-api.icloud.com/egress-ip-ranges.csv'
-PROTON = 'https://api.protonmail.ch/vpn/logicals'  # Disabled by default upstream; opt-in only
+PROTON = 'https://raw.githubusercontent.com/tn3w/ProtonVPN-IPs/refs/heads/master/protonvpn_ips.txt'  # Third-party, advertised exit IPs
 MAX_BYTES = 25_000_000
 
 
@@ -95,12 +95,24 @@ def apple():
 
 
 def proton():
-    data = json.loads(download(PROTON))
-    logicals = data.get('LogicalServers') if isinstance(data, dict) else None
-    if not isinstance(logicals, list):
-        raise ValueError('Proton API schema changed: LogicalServers missing')
-    return [server['ExitIP'] for item in logicals if isinstance(item, dict)
-            for server in item.get('Servers', []) if isinstance(server, dict) and server.get('ExitIP')]
+    """Parse the independent tn3w ProtonVPN exit-address feed.
+
+    Ignore comments and blank lines, but fail closed on malformed data. The
+    normalized output is plain bare IPv4 addresses, never /24 expansions.
+    """
+    addresses = []
+    for line_no, raw in enumerate(download(PROTON).splitlines(), 1):
+        token = raw.split('#', 1)[0].strip()
+        if not token:
+            continue
+        try:
+            address = ipaddress.IPv4Address(token)
+        except ValueError as exc:
+            raise ValueError(f'ProtonVPN feed line {line_no}: invalid IPv4 address {token!r}') from exc
+        if not address.is_global:
+            raise ValueError(f'ProtonVPN feed line {line_no}: non-public IPv4 address {token!r}')
+        addresses.append(str(address))
+    return addresses
 
 
 def normalize(name, candidates, minimum, maximum, allow_cidr=False):
@@ -124,15 +136,13 @@ def normalize(name, candidates, minimum, maximum, allow_cidr=False):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--input-dir', type=Path, required=True, help='STAGING input directory (not live repo)')
-    parser.add_argument('--include-proton', action='store_true', help='Attempt disabled-upstream Proton API refresh')
     args = parser.parse_args()
     targets = [
         ('mullvadvpn.txt', mullvad, 150, 20000, False),
         ('pia.txt', pia, 100, 50000, False),
         ('apple.txt', apple, 25, 50000, True),
+        ('protonvpn.txt', proton, 100, 50000, False),
     ]
-    if args.include_proton:
-        targets.append(('protonvpn.txt', proton, 100, 50000, False))
     # No files are changed until ALL fetches and validations succeed.
     prepared = {}
     for name, getter, minimum, maximum, cidr in targets:

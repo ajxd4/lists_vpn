@@ -30,9 +30,7 @@ trap 'rm -rf -- "$work"' EXIT
 mkdir -p "$work/input" "$work/generated"
 cp -a input/. "$work/input/"
 if [[ "${PI_REFRESH_PROVIDERS:-1}" == 1 ]]; then
-    extra=()
-    [[ "${PI_INCLUDE_PROTON:-0}" == 1 ]] && extra+=(--include-proton)
-    python3 pi/refresh-sources.py --input-dir "$work/input" "${extra[@]}"
+    python3 pi/refresh-sources.py --input-dir "$work/input"
 else
     echo 'WARNING: provider refresh disabled, using checked-in snapshot' >&2
 fi
@@ -46,36 +44,42 @@ python3 helpers/asn_to_cidr.py validate --family 4 --input "$work/generated/vpn/
 python3 helpers/asn_to_cidr.py validate --family 4 --input "$work/generated/datacenter/ipv4.txt" --min-addresses 250000000 --max-addresses 425000000
 python3 helpers/asn_to_cidr.py validate --family 6 --input "$work/generated/vpn/ipv6.txt" --require-nonempty
 python3 helpers/asn_to_cidr.py validate --family 6 --input "$work/generated/datacenter/ipv6.txt" --require-nonempty
+python3 pi/verify-proton-coverage.py "$work/input/vpn/ips/protonvpn.txt" "$work/generated/vpn/ipv4.txt"
 python3 pi/convert-unifi.py "$work/generated/vpn/ipv4.txt" "$work/generated/unifi/vpn/ipv4.txt"
+# Store an exact-IP Proton-only list alongside the combined VPN list.
+# Sources are normalized during refresh and have NO comments or CIDR expansions.
+[[ -s "$work/input/vpn/ips/protonvpn.txt" ]] || { echo 'ERROR: ProtonVPN source is empty' >&2; exit 1; }
+mkdir -p "$work/generated/protonvpn"
+cp "$work/input/vpn/ips/protonvpn.txt" "$work/generated/protonvpn/ipv4.txt"
+python3 pi/convert-unifi.py "$work/generated/protonvpn/ipv4.txt" "$work/generated/protonvpn/ipv4.checked.txt"
+cmp -s "$work/generated/protonvpn/ipv4.txt" "$work/generated/protonvpn/ipv4.checked.txt" || { echo 'ERROR: ProtonVPN output unexpectedly changed in converter' >&2; exit 1; }
+rm "$work/generated/protonvpn/ipv4.checked.txt"
 if [[ "${PI_DRY_RUN:-0}" == 1 ]]; then
     echo 'DRY RUN: lists generated and validated; no repo files modified or published.'
-    wc -l "$work/generated/vpn/ipv4.txt" "$work/generated/unifi/vpn/ipv4.txt" "$work/generated/datacenter/ipv4.txt"
+    wc -l "$work/generated/vpn/ipv4.txt" "$work/generated/unifi/vpn/ipv4.txt" "$work/generated/datacenter/ipv4.txt" "$work/generated/protonvpn/ipv4.txt"
     exit 0
 fi
-mkdir -p output/vpn output/datacenter output/unifi/vpn
+mkdir -p output/vpn output/datacenter output/unifi/vpn output/protonvpn
 for category in vpn datacenter; do
     for family in ipv4 ipv6; do
         cp "$work/generated/$category/$family.txt" "output/$category/$family.txt"
     done
 done
 cp "$work/generated/unifi/vpn/ipv4.txt" output/unifi/vpn/ipv4.txt
+cp "$work/generated/protonvpn/ipv4.txt" output/protonvpn/ipv4.txt
 cp "$work/generated/ipv4.txt" ipv4.txt
 if [[ -f "$work/generated/ASN-DATABASE.txt" ]]; then
     cp "$work/generated/ASN-DATABASE.txt" output/ASN-DATABASE.txt
 fi
 if [[ "${PI_REFRESH_PROVIDERS:-1}" == 1 ]]; then
-    for name in mullvadvpn.txt pia.txt apple.txt; do
+    for name in mullvadvpn.txt pia.txt apple.txt protonvpn.txt; do
         cp "$work/input/vpn/ips/$name" "input/vpn/ips/$name"
     done
-    if [[ "${PI_INCLUDE_PROTON:-0}" == 1 ]]; then
-        cp "$work/input/vpn/ips/protonvpn.txt" input/vpn/ips/protonvpn.txt
-    fi
 fi
 # Explicit paths prevent accidentally committing credentials, scratch files, etc.
-git add -- ipv4.txt output/vpn/ipv4.txt output/vpn/ipv6.txt output/datacenter/ipv4.txt output/datacenter/ipv6.txt output/unifi/vpn/ipv4.txt
+git add -- ipv4.txt output/vpn/ipv4.txt output/vpn/ipv6.txt output/datacenter/ipv4.txt output/datacenter/ipv6.txt output/unifi/vpn/ipv4.txt output/protonvpn/ipv4.txt
 [[ -f output/ASN-DATABASE.txt ]] && git add -- output/ASN-DATABASE.txt
-[[ "${PI_REFRESH_PROVIDERS:-1}" == 1 ]] && git add -- input/vpn/ips/mullvadvpn.txt input/vpn/ips/pia.txt input/vpn/ips/apple.txt
-[[ "${PI_INCLUDE_PROTON:-0}" == 1 ]] && git add -- input/vpn/ips/protonvpn.txt
+[[ "${PI_REFRESH_PROVIDERS:-1}" == 1 ]] && git add -- input/vpn/ips/mullvadvpn.txt input/vpn/ips/pia.txt input/vpn/ips/apple.txt input/vpn/ips/protonvpn.txt
 if git diff --cached --quiet; then
     echo 'No changes. Nothing to publish.'
     exit 0

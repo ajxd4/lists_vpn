@@ -15,6 +15,7 @@ def load(filename):
 
 convert = load('convert-unifi.py')
 feeds = load('refresh-sources.py')
+coverage = load('verify-proton-coverage.py')
 
 
 class ConversionTests(unittest.TestCase):
@@ -40,6 +41,20 @@ class ConversionTests(unittest.TestCase):
                          [ipaddress.IPv4Network(x) for x in dst])
 
 
+class ProtonCoverageTests(unittest.TestCase):
+    def test_included_by_cidr_and_host(self):
+        missing, count = coverage.uncovered(['1.1.1.1', '8.8.8.8'], ['1.1.1.0/24', '8.8.8.8/32'])
+        self.assertEqual((missing, count), ([], 2))
+
+    def test_overlapping_ranges(self):
+        missing, count = coverage.uncovered(['1.1.1.250'], ['1.1.1.0/24', '1.1.1.128/25', '1.1.1.200/32'])
+        self.assertEqual((missing, count), ([], 1))
+
+    def test_uncovered_ip_is_detected(self):
+        missing, count = coverage.uncovered(['1.1.1.1', '9.9.9.9'], ['1.1.1.0/24', '8.8.8.0/24'])
+        self.assertEqual((missing, count), (['9.9.9.9'], 2))
+
+
 class SourceTests(unittest.TestCase):
     def test_mullvad(self):
         with patch.object(feeds, 'download', return_value='[{"ipv4_addr_in":"1.1.1.1"},{"ipv4_addr_in":"9.9.9.9"}]'):
@@ -53,6 +68,22 @@ class SourceTests(unittest.TestCase):
     def test_apple_csv(self):
         with patch.object(feeds, 'download', return_value='17.0.0.0/16,US,US-CA\n2600:abcd::/48,US,US-CA\n'):
             self.assertEqual(feeds.apple(), ['17.0.0.0/16'])
+
+    def test_proton_comments_and_deduplication(self):
+        example = '# ProtonVPN IPs\n\n1.1.1.1\n9.9.9.9 # inline note\n1.1.1.1\n'
+        with patch.object(feeds, 'download', return_value=example):
+            self.assertEqual(feeds.normalize('protonvpn.txt', feeds.proton(), 2, 100),
+                             ['1.1.1.1', '9.9.9.9'])
+
+    def test_proton_invalid_data_fails_closed(self):
+        for text in ('# header only\n', '1.1.1.1\nnot-an-ip\n', '10.0.0.1\n', '2001:db8::1\n'):
+            with self.subTest(text=text), patch.object(feeds, 'download', return_value=text):
+                if 'header only' in text:
+                    with self.assertRaises(ValueError):
+                        feeds.normalize('protonvpn.txt', feeds.proton(), 1, 100)
+                else:
+                    with self.assertRaises(ValueError):
+                        feeds.proton()
 
     def test_normalize_rejects_private_and_small(self):
         with self.assertRaises(ValueError):
