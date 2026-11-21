@@ -72,18 +72,33 @@ class SourceTests(unittest.TestCase):
     def test_proton_comments_and_deduplication(self):
         example = '# ProtonVPN IPs\n\n1.1.1.1\n9.9.9.9 # inline note\n1.1.1.1\n'
         with patch.object(feeds, 'download', return_value=example):
-            self.assertEqual(feeds.normalize('protonvpn.txt', feeds.proton(), 2, 100),
-                             ['1.1.1.1', '9.9.9.9'])
+            v4, v6 = feeds.proton()
+            self.assertEqual(feeds.normalize('protonvpn.txt', v4, 2, 100), ['1.1.1.1', '9.9.9.9'])
+            self.assertEqual(v6, [])
 
     def test_proton_invalid_data_fails_closed(self):
         for text in ('# header only\n', '1.1.1.1\nnot-an-ip\n', '10.0.0.1\n', '2001:db8::1\n'):
             with self.subTest(text=text), patch.object(feeds, 'download', return_value=text):
                 if 'header only' in text:
                     with self.assertRaises(ValueError):
-                        feeds.normalize('protonvpn.txt', feeds.proton(), 1, 100)
+                        v4, v6 = feeds.proton()
+                        feeds.normalize('protonvpn.txt', v4, 1, 100)
                 else:
                     with self.assertRaises(ValueError):
                         feeds.proton()
+
+    def test_proton_entry_ipv4_and_ipv6_and_comments(self):
+        example = '# entry IPs\n2.58.241.66\n2a02:6ea0:c117::10\n1.1.1.1 # note\n2a02:6ea0:c117::10\n'
+        with patch.object(feeds, 'download', return_value=example):
+            v4, v6 = feeds.proton()
+            self.assertEqual(feeds.normalize('protonvpn.txt', v4, 2, 100), ['1.1.1.1', '2.58.241.66'])
+            self.assertEqual(feeds.normalize_v6('protonvpn_ipv6.txt', v6, 1, 100), ['2a02:6ea0:c117::10'])
+
+    def test_proton_ipv6_coverage(self):
+        missing, count = coverage.uncovered(['2a02:6ea0:c117::10'], ['2a02:6ea0:c117::/64'])
+        self.assertEqual((missing, count), ([], 1))
+        missing, count = coverage.uncovered(['2a02:6ea0:c117::10'], ['2001:4860::/32'])
+        self.assertEqual((missing, count), (['2a02:6ea0:c117::10'], 1))
 
     def test_normalize_rejects_private_and_small(self):
         with self.assertRaises(ValueError):

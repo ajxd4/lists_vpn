@@ -17,7 +17,7 @@ from urllib.request import Request, urlopen
 MULLVAD = 'https://api.mullvad.net/www/relays/all/'
 PIA = 'https://serverlist.piaservers.net/vpninfo/servers/v6'
 APPLE = 'https://mask-api.icloud.com/egress-ip-ranges.csv'
-PROTON = 'https://raw.githubusercontent.com/tn3w/ProtonVPN-IPs/refs/heads/master/protonvpn_ips.txt'  # Third-party, advertised exit IPs
+PROTON = 'https://raw.githubusercontent.com/tn3w/ProtonVPN-IPs/refs/heads/master/protonvpn_entry_ips.txt'  # Third-party, client connection endpoints (IPv4 and IPv6)
 MAX_BYTES = 25_000_000
 
 
@@ -95,24 +95,39 @@ def apple():
 
 
 def proton():
-    """Parse the independent tn3w ProtonVPN exit-address feed.
+    """Parse the third-party ProtonVPN ENTRY endpoints into separate IPv4 and IPv6 lists.
 
-    Ignore comments and blank lines, but fail closed on malformed data. The
-    normalized output is plain bare IPv4 addresses, never /24 expansions.
+    The upstream file contains both families, unlike the exits-only feed. Reject
+    malformed/non-global addresses rather than publishing a partial dataset.
     """
-    addresses = []
+    v4, v6 = [], []
     for line_no, raw in enumerate(download(PROTON).splitlines(), 1):
         token = raw.split('#', 1)[0].strip()
         if not token:
             continue
         try:
-            address = ipaddress.IPv4Address(token)
+            address = ipaddress.ip_address(token)
         except ValueError as exc:
-            raise ValueError(f'ProtonVPN feed line {line_no}: invalid IPv4 address {token!r}') from exc
+            raise ValueError(f'ProtonVPN entry feed line {line_no}: invalid IP address {token!r}') from exc
         if not address.is_global:
-            raise ValueError(f'ProtonVPN feed line {line_no}: non-public IPv4 address {token!r}')
-        addresses.append(str(address))
-    return addresses
+            raise ValueError(f'ProtonVPN entry feed line {line_no}: non-public IP address {token!r}')
+        (v4 if address.version == 4 else v6).append(str(address))
+    return v4, v6
+
+
+def normalize_v6(name, candidates, minimum, maximum):
+    found = set()
+    for token in candidates:
+        try:
+            address = ipaddress.IPv6Address(str(token).strip())
+        except ValueError as exc:
+            raise ValueError(f'{name}: invalid IPv6 address {token!r}') from exc
+        if not address.is_global:
+            raise ValueError(f'{name}: non-public IPv6 address {token!r}')
+        found.add(str(address))
+    if not minimum <= len(found) <= maximum:
+        raise ValueError(f'{name}: unexpected entry count {len(found)} (expected {minimum}..{maximum}); refusing update')
+    return sorted(found, key=lambda address: int(ipaddress.IPv6Address(address)))
 
 
 def normalize(name, candidates, minimum, maximum, allow_cidr=False):
@@ -141,7 +156,6 @@ def main():
         ('mullvadvpn.txt', mullvad, 150, 20000, False),
         ('pia.txt', pia, 100, 50000, False),
         ('apple.txt', apple, 25, 50000, True),
-        ('protonvpn.txt', proton, 100, 50000, False),
     ]
     # No files are changed until ALL fetches and validations succeed.
     prepared = {}
@@ -149,6 +163,15 @@ def main():
         values = normalize(name, getter(), minimum, maximum, cidr)
         prepared[name] = '\n'.join(values) + '\n'
         print(f'{name}: validated {len(values)} records', file=sys.stderr)
+    # One download, then publish separate family-specific inputs. The original
+    # X4BNet collector selects files containing 'ipv6' for IPv6 generation.
+    entry_v4, entry_v6 = proton()
+    v4 = normalize('protonvpn.txt', entry_v4, 100, 50000)
+    v6 = normalize_v6('protonvpn_ipv6.txt', entry_v6, 10, 50000)
+    prepared['protonvpn.txt'] = '\n'.join(v4) + '\n'
+    prepared['protonvpn_ipv6.txt'] = '\n'.join(v6) + '\n'
+    print(f'protonvpn.txt (entry IPv4): validated {len(v4)} records', file=sys.stderr)
+    print(f'protonvpn_ipv6.txt (entry IPv6): validated {len(v6)} records', file=sys.stderr)
     destination = args.input_dir / 'vpn' / 'ips'
     if not destination.is_dir():
         raise FileNotFoundError(f'missing source input directory: {destination}')
